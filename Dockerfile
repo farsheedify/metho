@@ -80,7 +80,7 @@ RUN git clone --depth 1 https://github.com/initstring/cloud_enum.git /opt/tools/
 
 # Metabigor - OSINT intelligence tool (Go build from source)
 RUN git clone --depth 1 https://github.com/j3ssie/metabigor.git /opt/tools/metabigor && \
-    cd /opt/tools/metabigor && go build -o /usr/local/bin/metabigor . && cd /
+    cd /opt/tools/metabigor && make build && cp ./bin/metabigor /usr/local/bin/metabigor
 
 # ── Copy Scripts ────────────────────────────────────────────────────────────
 COPY recon.sh /opt/scripts/recon.sh
