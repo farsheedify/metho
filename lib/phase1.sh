@@ -46,12 +46,24 @@ process_domain() {
         log_warn "Cero not found, skipping certificate transparency scan"
     fi
 
-    # Metabigor (subdomain enumeration from public data)
+    # Metabigor - certificate transparency
     if command -v metabigor &>/dev/null; then
-        log_info "Running Metabigor..."
-        echo "$domain" | metabigor org --subdomain -v 2>/dev/null | \
+        log_info "Running Metabigor (cert)..."
+        echo "$domain" | metabigor cert --clean 2>/dev/null | \
             grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" | \
-            grep "$domain" | sort -u > metabigor_results.txt || true
+            grep "$domain" | sort -u > metabigor_cert_results.txt || true
+
+        # Metabigor - related domain discovery (same org via crt.sh, reverse WHOIS, analytics IDs)
+        log_info "Running Metabigor (related)..."
+        echo "$domain" | metabigor related 2>/dev/null | \
+            grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" | \
+            sort -u > metabigor_related_results.txt || true
+
+        # Metabigor - GitHub code search for subdomain references
+        log_info "Running Metabigor (github)..."
+        echo "$domain" | metabigor github 2>/dev/null | \
+            grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" | \
+            grep "$domain" | sort -u > metabigor_github_results.txt || true
     else
         log_warn "Metabigor not found, skipping"
     fi
@@ -105,7 +117,9 @@ process_domain() {
 
     cat \
         cero_results.txt \
-        metabigor_results.txt \
+        metabigor_cert_results.txt \
+        metabigor_related_results.txt \
+        metabigor_github_results.txt \
         subfinder_results.txt \
         assetfinder_results.txt \
         gau_results.txt \
