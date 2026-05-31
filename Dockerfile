@@ -37,13 +37,11 @@ RUN go install -v github.com/owasp-amass/amass/v4/...@master 2>/dev/null || true
     go install -v github.com/projectdiscovery/katana/cmd/katana@latest && \
     go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest && \
     go install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest && \
-    go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
     go install -v github.com/ffuf/ffuf/v2@latest && \
     go install -v github.com/lc/gau/v2/cmd/gau@latest && \
     go install -v github.com/tomnomnom/assetfinder@latest && \
     go install -v github.com/jaeles-project/gospider@latest && \
     go install -v github.com/tomnomnom/waybackurls@latest && \
-    go install -v github.com/s0md3v/Arjun@latest && \
     go install -v github.com/tomnomnom/unfurl@latest
 
 # ── Python Tools ────────────────────────────────────────────────────────────
