@@ -299,7 +299,7 @@ The build installs all tools at image build time (no runtime downloads). This ta
 
 ### Installed Tools
 
-**Go tools:** amass, subfinder, httpx, katana, dnsx, shuffledns, nuclei, ffuf, gau, assetfinder, gospider, waybackurls, Arjun, unfurl
+**Go tools:** amass, subfinder, httpx, katana, dnsx, shuffledns, ffuf, gau, assetfinder, gospider, waybackurls, unfurl
 
 **Python tools:** sublist3r, parameth
 
