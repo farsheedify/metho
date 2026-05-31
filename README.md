@@ -2,7 +2,7 @@
 
 A Dockerized, fully automated reconnaissance pipeline for bug bounty hunting. Feed it root domains and it maps the entire attack surface: subdomains, live web servers, cloud assets, ASN/network infrastructure, IPs, and open ports.
 
-Based on the [Ars0n Framework v2 methodology](methodology.md).
+Based on the [Ars0n Framework v2 methodology](https://rs0n.io/workshop/methodology).
 
 ---
 
