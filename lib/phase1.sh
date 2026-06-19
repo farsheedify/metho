@@ -42,6 +42,9 @@ process_domain() {
     if command -v cero &>/dev/null; then
         log_info "Running Cero (certificate transparency)..."
         cero -d "$domain" 2>/dev/null | sort -u > cero_results.txt || true
+        local cero_count=0
+        [[ -s cero_results.txt ]] && cero_count=$(wc -l < cero_results.txt)
+        log_success "Cero subdomains: $cero_count"
     else
         log_warn "Cero not found, skipping certificate transparency scan"
     fi
@@ -53,11 +56,17 @@ process_domain() {
         subfinder_opts+=(-provider-config "$SUBFINDER_PROVIDER_CONFIG")
     fi
     subfinder "${subfinder_opts[@]}" 2>/dev/null || true
+    local sf_count=0
+    [[ -s subfinder_results.txt ]] && sf_count=$(wc -l < subfinder_results.txt)
+    log_success "Subfinder subdomains: $sf_count"
 
     # Assetfinder
     if command -v assetfinder &>/dev/null; then
         log_info "Running Assetfinder..."
         assetfinder --subs-only "$domain" > assetfinder_results.txt 2>/dev/null || true
+        local af_count=0
+        [[ -s assetfinder_results.txt ]] && af_count=$(wc -l < assetfinder_results.txt)
+        log_success "Assetfinder subdomains: $af_count"
     fi
 
     # GAU
@@ -66,6 +75,9 @@ process_domain() {
         echo "$domain" | gau --subs --threads 10 2>/dev/null | \
             grep -oE '([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}' | \
             grep "$domain" | sort -u > gau_results.txt || true
+        local gau_count=0
+        [[ -s gau_results.txt ]] && gau_count=$(wc -l < gau_results.txt)
+        log_success "GAU subdomains: $gau_count"
     fi
 
     # Sublist3r - capture results despite warnings/errors
@@ -84,15 +96,19 @@ process_domain() {
         # even when some search engines throw exceptions
         timeout 300 bash -c "$sl3_cmd -d \"$domain\" -t \"$THREADS\" -v 2>&1" > "$sublist3r_all_output" || true
 
-        # Extract subdomains from output: look for lines that are valid domain names
-        # Sublist3r prints results as plain domain names, one per line, after the banner
-        grep -oE '^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$' "$sublist3r_all_output" 2>/dev/null | \
+        # Extract subdomains from verbose output. Sublist3r's -v mode prints lines like:
+        #   Netcraft: it.idp.vodafone.com
+        #   Baidu: sub.domain.com
+        # as well as bare domain lines in the final summary.
+        # Use grep -oE (no anchors) to extract domains from anywhere on the line,
+        # then filter to only those matching the target domain.
+        grep -oE '([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}' "$sublist3r_all_output" 2>/dev/null | \
             grep -E "\.${domain}$|^${domain}$" | \
             sort -u > sublist3r_results.txt || true
 
         local sl3_count=0
         [[ -s sublist3r_results.txt ]] && sl3_count=$(wc -l < sublist3r_results.txt)
-        log_success "Sublist3r subdomains captured: $sl3_count (errors from some engines ignored)"
+        log_success "Sublist3r subdomains: $sl3_count (errors from some engines ignored)"
 
         # Keep full output for debugging
         mv "$sublist3r_all_output" sublist3r_full_output.txt
@@ -104,6 +120,9 @@ process_domain() {
         github-subdomains -d "$domain" \
             -t "$GITHUB_TOKENS_FILE" \
             -o github_subdomains_results.txt 2>/dev/null || true
+        local gh_count=0
+        [[ -s github_subdomains_results.txt ]] && gh_count=$(wc -l < github_subdomains_results.txt)
+        log_success "github-subdomains subdomains: $gh_count"
     else
         if [[ -z "$GITHUB_TOKENS_FILE" ]]; then
             log_skip "github-subdomains skipped (no --github-tokens-file)"
