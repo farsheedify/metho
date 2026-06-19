@@ -48,25 +48,20 @@ process_domain() {
 
     # Metabigor - related domain discovery (same org via crt.sh, reverse WHOIS, analytics IDs)
     # Only using 'related' flag per https://github.com/j3ssie/metabigor
-    # Note: metabigor related can be flaky - run multiple times and deduplicate
     if command -v metabigor &>/dev/null; then
         log_info "Running Metabigor (related)..."
         local metabigor_out="metabigor_related_results_raw.txt"
         local metabigor_clean="metabigor_related_results.txt"
-        : > "$metabigor_out"
 
-        # Run multiple times to mitigate flaky results (crt.sh sometimes returns 0)
-        for i in 1 2 3; do
-            log_info "  Metabigor related run #$i..."
-            echo "$domain" | metabigor related 2>/dev/null >> "$metabigor_out" || true
-            sleep 2
-        done
+        echo "$domain" | metabigor related 2>/dev/null > "$metabigor_out" || true
 
         # Clean output: extract valid domains, filter garbage (JavaScript fragments, etc.)
-        # The grep ensures valid domain format, then filter for target domain or related domains
         grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" "$metabigor_out" 2>/dev/null | \
             grep -vE "^(str\.|math\.|date\.|window\.|document\.|navigator\.|location\.|url\.|res\.|data\.|el\.|e\.|img\.|text\.|prompt\.|target\.|indicator\.|dots\.|translations\.|parts\.|rect\.|host\.|feedback\.)" | \
             sort -u > "$metabigor_clean" || true
+
+        # Remove raw file after cleanup
+        rm -f "$metabigor_out"
 
         local metabigor_count=0
         [[ -s "$metabigor_clean" ]] && metabigor_count=$(wc -l < "$metabigor_clean")
