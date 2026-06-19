@@ -46,30 +46,6 @@ process_domain() {
         log_warn "Cero not found, skipping certificate transparency scan"
     fi
 
-    # Metabigor - related domain discovery (same org via crt.sh, reverse WHOIS, analytics IDs)
-    # Only using 'related' flag per https://github.com/j3ssie/metabigor
-    if command -v metabigor &>/dev/null; then
-        log_info "Running Metabigor (related)..."
-        local metabigor_out="metabigor_related_results_raw.txt"
-        local metabigor_clean="metabigor_related_results.txt"
-
-        echo "$domain" | metabigor related 2>/dev/null > "$metabigor_out" || true
-
-        # Clean output: extract valid domains, filter garbage (JavaScript fragments, etc.)
-        grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" "$metabigor_out" 2>/dev/null | \
-            grep -vE "^(str\.|math\.|date\.|window\.|document\.|navigator\.|location\.|url\.|res\.|data\.|el\.|e\.|img\.|text\.|prompt\.|target\.|indicator\.|dots\.|translations\.|parts\.|rect\.|host\.|feedback\.)" | \
-            sort -u > "$metabigor_clean" || true
-
-        # Remove raw file after cleanup
-        rm -f "$metabigor_out"
-
-        local metabigor_count=0
-        [[ -s "$metabigor_clean" ]] && metabigor_count=$(wc -l < "$metabigor_clean")
-        log_success "Metabigor related domains (after cleanup): $metabigor_count"
-    else
-        log_warn "Metabigor not found, skipping"
-    fi
-
     # Subfinder
     log_info "Running Subfinder..."
     local subfinder_opts=(-d "$domain" -all -silent -o subfinder_results.txt)
@@ -111,7 +87,7 @@ process_domain() {
         # Extract subdomains from output: look for lines that are valid domain names
         # Sublist3r prints results as plain domain names, one per line, after the banner
         grep -oE '^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$' "$sublist3r_all_output" 2>/dev/null | \
-            grep "\.$domain\$\|^$domain\$" | \
+            grep -E "\.${domain}$|^${domain}$" | \
             sort -u > sublist3r_results.txt || true
 
         local sl3_count=0
@@ -141,7 +117,6 @@ process_domain() {
 
     cat \
         cero_results.txt \
-        metabigor_related_results.txt \
         subfinder_results.txt \
         assetfinder_results.txt \
         gau_results.txt \
