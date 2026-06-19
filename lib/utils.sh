@@ -216,8 +216,15 @@ httpx_probe() {
         return
     fi
 
-    log_info "Probing $(wc -l < "$input_file") targets with httpx..."
+    local target_count
+    target_count=$(wc -l < "$input_file")
+    log_info "Probing ${target_count} targets with httpx..."
 
+    # httpx log file for full verbose output (for debugging)
+    local httpx_log="${output_json%.json}.httpx.log"
+
+    # Run httpx with full output redirected to log file
+    # Only show minimal progress on console
     cat "$input_file" | httpx \
         -ports "$ports" \
         -silent \
@@ -231,15 +238,18 @@ httpx_probe() {
         -retries 2 \
         -rate-limit "$RATE_LIMIT" \
         -mc "$HTTPX_MATCH_CODES" \
-        -o "$output_json" 2>/dev/null
+        -o "$output_json" 2>"$httpx_log"
 
+    local count=0
     if [[ -s "$output_json" ]]; then
-        local count
         count=$(wc -l < "$output_json")
         log_success "Live web servers found: $count"
     else
         log_warn "No live web servers found in this round."
     fi
+
+    # Append a summary to the httpx log for context
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] httpx run complete: ${count} results from ${target_count} targets" >> "$httpx_log"
 }
 
 # ── Domain Extraction ───────────────────────────────────────────────────────

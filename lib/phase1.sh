@@ -46,24 +46,31 @@ process_domain() {
         log_warn "Cero not found, skipping certificate transparency scan"
     fi
 
-    # Metabigor - certificate transparency
+    # Metabigor - related domain discovery (same org via crt.sh, reverse WHOIS, analytics IDs)
+    # Only using 'related' flag per https://github.com/j3ssie/metabigor
+    # Note: metabigor related can be flaky - run multiple times and deduplicate
     if command -v metabigor &>/dev/null; then
-        log_info "Running Metabigor (cert)..."
-        echo "$domain" | metabigor cert --clean 2>/dev/null | \
-            grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" | \
-            grep "$domain" | sort -u > metabigor_cert_results.txt || true
-
-        # Metabigor - related domain discovery (same org via crt.sh, reverse WHOIS, analytics IDs)
         log_info "Running Metabigor (related)..."
-        echo "$domain" | metabigor related 2>/dev/null | \
-            grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" | \
-            sort -u > metabigor_related_results.txt || true
+        local metabigor_out="metabigor_related_results_raw.txt"
+        local metabigor_clean="metabigor_related_results.txt"
+        : > "$metabigor_out"
 
-        # Metabigor - GitHub code search for subdomain references
-        log_info "Running Metabigor (github)..."
-        echo "$domain" | metabigor github 2>/dev/null | \
-            grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" | \
-            grep "$domain" | sort -u > metabigor_github_results.txt || true
+        # Run multiple times to mitigate flaky results (crt.sh sometimes returns 0)
+        for i in 1 2 3; do
+            log_info "  Metabigor related run #$i..."
+            echo "$domain" | metabigor related 2>/dev/null >> "$metabigor_out" || true
+            sleep 2
+        done
+
+        # Clean output: extract valid domains, filter garbage (JavaScript fragments, etc.)
+        # The grep ensures valid domain format, then filter for target domain or related domains
+        grep -oE "([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}" "$metabigor_out" 2>/dev/null | \
+            grep -vE "^(str\.|math\.|date\.|window\.|document\.|navigator\.|location\.|url\.|res\.|data\.|el\.|e\.|img\.|text\.|prompt\.|target\.|indicator\.|dots\.|translations\.|parts\.|rect\.|host\.|feedback\.)" | \
+            sort -u > "$metabigor_clean" || true
+
+        local metabigor_count=0
+        [[ -s "$metabigor_clean" ]] && metabigor_count=$(wc -l < "$metabigor_clean")
+        log_success "Metabigor related domains (after cleanup): $metabigor_count"
     else
         log_warn "Metabigor not found, skipping"
     fi
@@ -90,12 +97,34 @@ process_domain() {
             grep "$domain" | sort -u > gau_results.txt || true
     fi
 
-    # Sublist3r
+    # Sublist3r - capture results despite warnings/errors
+    # Sublist3r prints results to stdout even when some engines fail
     if command -v sublist3r &>/dev/null || [[ -f /opt/tools/sublist3r/sublist3r.py ]]; then
         log_info "Running Sublist3r..."
         local sl3_cmd="sublist3r"
         command -v sublist3r &>/dev/null || sl3_cmd="python3 /opt/tools/sublist3r/sublist3r.py"
-        $sl3_cmd -d "$domain" -t "$THREADS" -o sublist3r_results.txt 2>/dev/null || true
+
+        # Run sublist3r, capture ALL output (stdout+stderr), then extract valid subdomains
+        # Use timeout to prevent hanging, and run with -v for verbose output
+        local sublist3r_all_output="sublist3r_all_output.txt"
+        : > "$sublist3r_all_output"
+
+        # Capture both stdout and stderr; sublist3r prints discovered subdomains to stdout
+        # even when some search engines throw exceptions
+        timeout 300 bash -c "$sl3_cmd -d \"$domain\" -t \"$THREADS\" -v 2>&1" > "$sublist3r_all_output" || true
+
+        # Extract subdomains from output: look for lines that are valid domain names
+        # Sublist3r prints results as plain domain names, one per line, after the banner
+        grep -oE '^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$' "$sublist3r_all_output" 2>/dev/null | \
+            grep "\.$domain\$\|^$domain\$" | \
+            sort -u > sublist3r_results.txt || true
+
+        local sl3_count=0
+        [[ -s sublist3r_results.txt ]] && sl3_count=$(wc -l < sublist3r_results.txt)
+        log_success "Sublist3r subdomains captured: $sl3_count (errors from some engines ignored)"
+
+        # Keep full output for debugging
+        mv "$sublist3r_all_output" sublist3r_full_output.txt
     fi
 
     # github-subdomains
@@ -117,9 +146,7 @@ process_domain() {
 
     cat \
         cero_results.txt \
-        metabigor_cert_results.txt \
         metabigor_related_results.txt \
-        metabigor_github_results.txt \
         subfinder_results.txt \
         assetfinder_results.txt \
         gau_results.txt \
