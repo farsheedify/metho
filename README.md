@@ -36,7 +36,7 @@ For each root domain, discovers every subdomain through multiple complementary t
 
 | Stage | What Happens | Tool(s) |
 |-------|-------------|---------|
-| 1 | Certificate transparency, OSINT scraping | Cero, Metabigor, Subfinder, Assetfinder, GAU, Sublist3r, github-subdomains |
+| 1 | Certificate transparency, OSINT scraping | Cero, Metabigor (related), Subfinder, Assetfinder, GAU, Sublist3r, github-subdomains |
 | 2 | Consolidate + HTTPx probe (Round 1) | httpx |
 | 3 | Custom wordlist generation + DNS brute force | CeWL, ShuffleDNS |
 | 4 | Consolidate + HTTPx probe (Round 2) | httpx |
@@ -257,11 +257,15 @@ results/
 │
 ├── phase1/
 │   ├── example.com/
-│   │   ├── all_subdomains_final.txt    # All subdomains discovered
-│   │   ├── live_subdomains_final.txt   # Live web server URLs
-│   │   ├── httpx_results_final.json    # Full HTTPx metadata (JSON)
-│   │   ├── cero_results.txt            # Cero (cert transparency) results
-│   │   ├── subfinder_results.txt       # Subfinder results
+│   │   ├── all_subdomains_final.txt      # All subdomains discovered
+│   │   ├── live_subdomains_final.txt     # Live web server URLs
+│   │   ├── httpx_results_final.json      # Full HTTPx metadata (JSON)
+│   │   ├── httpx_results_final.httpx.log # Full HTTPx stderr log (for debugging)
+│   │   ├── cero_results.txt              # Cero (cert transparency) results
+│   │   ├── metabigor_related_results.txt # Metabigor related domains (cleaned)
+│   │   ├── subfinder_results.txt         # Subfinder results
+│   │   ├── sublist3r_results.txt         # Sublist3r subdomains (captured despite engine errors)
+│   │   ├── sublist3r_full_output.txt     # Sublist3r complete raw output
 │   │   ├── github_subdomains_results.txt # GitHub subdomains
 │   │   └── ...
 │   ├── example.org/
@@ -399,3 +403,30 @@ docker build -t bb-methodology .
 - **Cloud enum keywords.** By default, the base name of each root domain is used as a keyword. Use `--cloud-enum-keywords` to add extra keywords.
 - **Check recon.log.** The timestamped log file captures everything — useful for debugging or tuning the pipeline.
 - **Do manual recon first.** Google dorking and reverse WHOIS can find additional root domains. Add them to your input file before running the pipeline.
+
+---
+
+## Tool Behavior Notes
+
+### Metabigor — Related Domain Discovery
+
+The pipeline uses **only** `metabigor related` (not `cert` or `github`) per the [official Metabigor documentation](https://github.com/j3ssie/metabigor). This flag discovers related domains via:
+- crt.sh certificate transparency logs
+- Reverse WHOIS lookups
+- BuiltWith analytics ID correlation
+
+**Known behavior:** Metabigor's output can be flaky — crt.sh occasionally returns 0 results on some runs. To mitigate this, the pipeline runs `metabigor related` **3 times** per domain with a short delay, then deduplicates and cleans the combined output. It also filters out JavaScript artifact garbage (e.g., `date.now`, `res.headers.get`) that sometimes leaks into the output.
+
+### Sublist3r — Error-Resilient Capture
+
+Sublist3r queries multiple search engines (Google, Bing, VirusTotal, DNSdumpster, etc.). Some engines may block requests or throw parsing exceptions, but Sublist3r still prints discovered subdomains from the working engines to stdout.
+
+The pipeline captures **all stdout+stderr output**, then extracts valid subdomains using regex filtering. This ensures you get subdomains even when individual engines fail. The full raw output is preserved as `sublist3r_full_output.txt` for debugging.
+
+### HTTPx — Console Noise Reduction
+
+HTTPx can be verbose on stderr (progress bars, connection errors, timeouts). The pipeline redirects all HTTPx stderr to a dedicated `.httpx.log` file (e.g., `httpx_results_round1.httpx.log`) instead of suppressing it. This means:
+- **Console:** Only shows `Probing N targets...` and `Live web servers found: X`
+- **Log file:** Contains full HTTPx stderr output for debugging connection issues, timeouts, or rate limiting
+
+---
