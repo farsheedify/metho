@@ -415,7 +415,7 @@ The pipeline uses **only** `metabigor related` (not `cert` or `github`) per the 
 - Reverse WHOIS lookups
 - BuiltWith analytics ID correlation
 
-**Known behavior:** Metabigor's output can be flaky — crt.sh occasionally returns 0 results on some runs. To mitigate this, the pipeline runs `metabigor related` **3 times** per domain with a short delay, then deduplicates and cleans the combined output. It also filters out JavaScript artifact garbage (e.g., `date.now`, `res.headers.get`) that sometimes leaks into the output.
+**Known behavior:** Metabigor's output can contain JavaScript artifact garbage (e.g., `date.now`, `res.headers.get`) that leaks into the output from scraped web pages. The pipeline filters these artifacts out and keeps only valid domain names. The raw output is discarded after cleanup.
 
 ### Sublist3r — Error-Resilient Capture
 
