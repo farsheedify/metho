@@ -31,6 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Python symlink — many tools (e.g. Sublist3r) use '#!/usr/bin/env python'
+# but modern Kali only ships python3.
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
 # ── Go Environment ──────────────────────────────────────────────────────────
 ENV GOPATH=/root/go
 ENV PATH="${PATH}:${GOPATH}/bin:/usr/local/go/bin"
@@ -77,10 +81,6 @@ RUN git clone --depth 1 https://github.com/nsonaniya2010/SubDomainizer.git /opt/
 # Cloud_Enum - Cloud bucket/service brute force
 RUN git clone --depth 1 https://github.com/initstring/cloud_enum.git /opt/tools/cloud_enum && \
     pip3 install --break-system-packages -r /opt/tools/cloud_enum/requirements.txt 2>/dev/null || true
-
-# Metabigor - OSINT intelligence tool (Go build from source)
-RUN git clone --depth 1 https://github.com/j3ssie/metabigor.git /opt/tools/metabigor && \
-    cd /opt/tools/metabigor && make build && cp ./bin/metabigor /usr/local/bin/metabigor
 
 # ── Copy Scripts ────────────────────────────────────────────────────────────
 COPY recon.sh /opt/scripts/recon.sh
