@@ -6,19 +6,24 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # REQUIRED to push to GHCR
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
       - name: Build Docker image
-        run: docker build -t bb-methodology .
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/bb-methodology:latest
+          docker build -t $IMAGE_NAME .
 
-      - name: Save image to tar
-        run: docker save bb-methodology -o bb-methodology.tar
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bb-methodology-image
-          path: bb-methodology.tar
+      - name: Push image
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/bb-methodology:latest
+          docker push $IMAGE_NAME
