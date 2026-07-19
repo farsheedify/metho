@@ -74,7 +74,7 @@ run_phase2() {
                 -trf /opt/scripts/wordlists/resolvers.txt \
                 -rqps 10 \
                 -log "${pdir}/amass_${domain}.log" \
-                2>>"${pdir}/amass.stderr.log" \
+                < /dev/null 2>>"${pdir}/amass.stderr.log" \
                 | tee -a "${pdir}/amass_enum_output.txt" || true
         done < "$root_domains_file"
 
@@ -120,8 +120,11 @@ run_phase2() {
         local dnsx_log="${pdir}/dnsx.stderr.log"
         : > "$dnsx_log"
 
-        timeout "${DNSX_TIMEOUT:-600}" cat "$all_subdomains_file" \
-            | dnsx -a -aaaa -cname -mx -ns -txt -ptr -srv \
+        # `timeout` must wrap dnsx, NOT cat. Wrapping cat (an instant
+        # command) left dnsx itself completely uncapped — the previous
+        # behaviour, which made DNSX_TIMEOUT a no-op.
+        cat "$all_subdomains_file" \
+            | timeout "${DNSX_TIMEOUT:-600}" dnsx -a -aaaa -cname -mx -ns -txt -ptr -srv \
                 -re -json -retry 3 \
                 -r /opt/scripts/wordlists/resolvers.txt \
                 -timeout 5 \
@@ -262,12 +265,20 @@ run_phase2() {
             # ALSO via the bash `timeout` shell command would be belt-
             # and-braces but `-ct` is enough for Katana since it cleanly
             # tears down on expiry.
+            #
+            # `< /dev/null` is CRITICAL: katana merges any non-TTY stdin
+            # into its crawl-target set (internal/runner/options.go:
+            # fileutil.HasStdin() + bufio.Scanner, same `values` map as -u).
+            # Inside this `while read ... done < file` loop the loop's stdin
+            # IS the seed file, so the first katana call would slurp every
+            # remaining seed and end the loop after ONE host — same bug
+            # class as gospider in Phase 1, verified live in our tests.
             katana -u "$url" -d 3 -jc -j \
                 -timeout 30 -c 20 -p 1 \
                 -retry 2 -rd 1 -rl 10 \
                 -ct "${KATANA_CRAWL_DURATION:-30m}" \
                 -silent \
-                2>>"${pdir}/katana.stderr.log" \
+                < /dev/null 2>>"${pdir}/katana.stderr.log" \
                 | tee -a "${pdir}/katana/raw_output.txt" >/dev/null || \
                     log_warn "Katana on $url exited non-zero (likely -ct hit) — see ${pdir}/katana.stderr.log"
         done < "$live_web_file"

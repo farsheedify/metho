@@ -23,6 +23,53 @@ run_phase1() {
     done < "$root_domains_file"
 }
 
+# ── CeWL helpers (Stage 3a) ─────────────────────────────────────────────────
+# CeWL keeps the spider frontier and every collected word in RAM (it prints
+# words only after the crawl finishes). On large doc/library sites a `-d 2`
+# crawl can grow past the container's memory and get SIGKILLed by the kernel
+# OOM killer — we watched this happen mid-run ("Killed" after ~2.5 min on a
+# big docs host, far below the 600s timeout). CeWL itself has NO page-limit
+# or memory flag (per the digininja/CeWL README the only crawl-size levers
+# are -d, staying on-site, --exclude and --allowed), so we bound it from the
+# outside:
+#
+#   * `ulimit -v` caps the cewl process's address space at CEWL_MEM_LIMIT_MB.
+#     When Ruby hits it, cewl exits non-zero (NoMemoryError) instead of the
+#     kernel OOM-killing it — and potentially destabilizing the Docker VM.
+#   * On ANY failure (memory cap, timeout, crash) we retry the same host at
+#     depth 1 — breadth across all live hosts matters more for wordlist
+#     diversity than depth on one host, so we degrade gracefully instead of
+#     losing the host's words entirely. CeWL only prints its wordlist after
+#     the crawl completes, so a killed crawl appends nothing — no partial
+#     junk reaches the wordlist.
+#   * `< /dev/null` detaches cewl's stdin from the enclosing `while read`
+#     loop (defence against the stdin-consumption bug class that
+#     gospider/katana exhibited).
+run_cewl() {
+    local url="$1" depth="$2"
+    (
+        ulimit -v "$(( ${CEWL_MEM_LIMIT_MB:-1024} * 1024 ))" 2>/dev/null || true
+        exec timeout "${CEWL_TIMEOUT:-600}" cewl "$url" \
+            -d "$depth" -m 5 --with-numbers < /dev/null 2>/dev/null
+    )
+}
+
+# CeWL output format (per digininja/CeWL cewl.rb): without -c/--count it
+# prints one bare word per line. We deliberately do NOT pass -c — the count
+# column is noise for ShuffleDNS brute force. `--with-numbers` keeps
+# alphanumeric tokens like `iso9001`/`s3` that the source would otherwise
+# strip. The awk chain re-filters defensively: CeWL writes connection
+# errors to STDOUT (not STDERR) when not in -v mode, and the second awk
+# drops anything that isn't a clean 3–20 char token containing at least one
+# letter. (The letter floor used to be >= 2, which silently dropped
+# valuable labels like mx1, db2, s3x — pure-digit strings are still
+# dropped; leading-digit tokens are removed later by the post-filter.)
+cewl_filter() {
+    awk 'length >= 3 && length <= 20' | \
+    awk '{ orig=$0; if (match($0, /^[a-zA-Z0-9_-]{3,20}$/) && gsub(/[a-zA-Z]/, "&") >= 1) print orig }' | \
+    tr '[:upper:]' '[:lower:]'
+}
+
 process_domain() {
     local domain="$1"
     local pdir="$2"
@@ -154,7 +201,10 @@ process_domain() {
     if [[ -s all_subdomains_round1.txt ]]; then
         log_success "Subdomains from scraping: $(wc -l < all_subdomains_round1.txt)"
         httpx_probe all_subdomains_round1.txt httpx_results_round1.json
-        [[ -s httpx_results_round1.json ]] && jq -r '.url' httpx_results_round1.json | sort -u > live_subdomains_round1.txt
+        # `|| true`: jq exits non-zero on a malformed JSONL line; that must
+        # not abort the run under set -e (this `&&` list ends with the jq
+        # pipeline, so its failure WOULD trigger set -e).
+        [[ -s httpx_results_round1.json ]] && jq -r '.url' httpx_results_round1.json | sort -u > live_subdomains_round1.txt || true
     else
         log_warn "No subdomains found from scraping for $domain"
         cd "$pdir" || return 1
@@ -171,43 +221,25 @@ process_domain() {
     if [[ -s live_subdomains_round1.txt ]] && command -v cewl &>/dev/null; then
         while read -r url; do
             [[ -z "$url" ]] && continue
-            log_info "  Crawling $url for words..."
-            # CeWL output format (per digininja/CeWL cewl.rb line 1242-1244):
-            #   WITHOUT -c/--count  →  one bare `word` per line
-            #   WITH    -c/--count  →  `word, count` per line (NOT count,word!)
-            #
-            # We deliberately do NOT pass `-c`; the count column is noise
-            # for our use case (ShuffleDNS brute force), and would force
-            # us to strip it before piping the list further.
-            #
-            # `--with-numbers` keeps alphanumeric tokens like `iso9001`
-            # in the output; without it, digits are stripped at the
-            # source (cewl.rb line 1175-1178). Useful when sites
-            # mention versions, dates, or product codes that may also
-            # appear as subdomain labels.
-            #
-            # `-d 2 -m 5` = spider depth 2, minimum word length 5.
-            # We let CeWL enforce min length; the outer `awk 'length
-            # >= 3 && length <= 20'` is a defensive re-filter that
-            # also drops tokens containing whitespace, punctuation,
-            # or stray error text (CeWL writes connection errors to
-            # STDOUT, not STDERR, when not in -v mode; cewl.rb
-            # line 270-281). The strict `/^[a-zA-Z0-9_-]{3,20}$/`
-            # filter inside the second awk drops anything that isn't
-            # a clean token.
-            timeout 600 cewl "$url" -d 2 -m 5 --with-numbers 2>/dev/null | \
-                awk 'length >= 3 && length <= 20' | \
-                awk '{ orig=$0; if (match($0, /^[a-zA-Z0-9_-]{3,20}$/) && gsub(/[a-zA-Z]/, "&") >= 2) print orig }' | \
-                tr '[:upper:]' '[:lower:]' \
-                >> wordlists/custom_wordlist.txt || true
+            log_info "  Crawling $url for words (depth ${CEWL_DEPTH:-2}, mem cap ${CEWL_MEM_LIMIT_MB:-1024}MB)..."
+            if ! run_cewl "$url" "${CEWL_DEPTH:-2}" | cewl_filter >> wordlists/custom_wordlist.txt; then
+                # Failed (memory cap / timeout / crash) — retry shallower so
+                # we still collect this host's words instead of losing them.
+                log_warn "  CeWL failed on $url at depth ${CEWL_DEPTH:-2} — retrying at depth 1"
+                run_cewl "$url" 1 | cewl_filter >> wordlists/custom_wordlist.txt || \
+                    log_warn "  CeWL failed on $url even at depth 1 — skipping host"
+            fi
         done < live_subdomains_round1.txt
         sort -u wordlists/custom_wordlist.txt -o wordlists/custom_wordlist.txt
 
-        # Drop words whose first non-letter char is a digit too early
-        # (would still match the 2-letter floor above — e.g. "a1234b"
-        # passes but is never a real subdomain label).
+        # Final label-sanity filter. Digits are ALLOWED (token must merely
+        # start with a letter): --with-numbers deliberately keeps tokens
+        # like s3, mx1, iso9001, php7 — real subdomain labels — and a
+        # previous version of this filter stripped every digit-containing
+        # token, silently nullifying --with-numbers. Leading-digit tokens
+        # are still dropped.
         awk 'length >= 3 && length <= 20' wordlists/custom_wordlist.txt | \
-            grep -E '^([a-z][a-z_-]*[a-z]|[a-z])$' | \
+            grep -E '^([a-z][a-z0-9_-]*[a-z0-9]|[a-z])$' | \
             sort -u -o wordlists/custom_wordlist.txt || true
     fi
 
@@ -374,6 +406,16 @@ WORDBASE
         log_warn "ShuffleDNS not found, skipping brute force"
     fi
 
+    # comm (Stage 4 below) requires BOTH inputs sorted, but shuffledns -o
+    # output is in massdns discovery order — NOT sorted. Sorting it in place
+    # here fixes the "comm: file 2 is not in sorted order" error, which was
+    # producing a wrong new-vs-known set (it reported 8 "new" hosts when the
+    # true number was 0, and on other targets can silently DROP genuinely
+    # new hosts so they're never probed).
+    if [[ -s shuffledns_results.txt ]]; then
+        sort -u shuffledns_results.txt -o shuffledns_results.txt || true
+    fi
+
     # ── Stage 4: Consolidate & HTTPx Round 2 ────────────────────────────────
     log_info "Stage 4: Consolidate + HTTPx Round 2"
 
@@ -402,7 +444,7 @@ WORDBASE
         # the union of all live hosts.
         httpx_probe new_subdomains_round2.txt httpx_results_round2.json
         if [[ -s httpx_results_round2.json ]]; then
-            jq -r '.url' httpx_results_round2.json | sort -u > new_live_subdomains_round2.txt
+            jq -r '.url' httpx_results_round2.json | sort -u > new_live_subdomains_round2.txt || true
         else
             : > new_live_subdomains_round2.txt
         fi
@@ -459,9 +501,15 @@ WORDBASE
             [[ -z "$url" ]] && continue
             gs_loop_count=$((gs_loop_count + 1))
             log_info "  Crawling $url with GoSpider..."
+            # `< /dev/null` is CRITICAL: gospider reads EXTRA crawl targets
+            # from any non-TTY stdin (main.go: os.Stdin.Stat + bufio.Scanner,
+            # merged with -s). Inside this `while read ... done < file` loop
+            # the loop's stdin IS live_subdomains_round2.txt, so the first
+            # gospider call slurped every remaining seed and the loop ended
+            # after ONE host — verified against our run logs ("1 seeds").
             timeout "${GOSPIDER_TIMEOUT:-600}" gospider -s "$url" -c 10 -d 3 -t 1 -k 1 -K 2 -m 30 \
                 --blacklist ".(jpg|jpeg|gif|css|tif|tiff|png|ttf|woff|woff2|ico|svg)" \
-                -a -w -r --js --sitemap --robots --json -v 2>/dev/null | \
+                -a -w -r --js --sitemap --robots --json -v < /dev/null 2>/dev/null | \
                 tee -a gospider/raw_output.txt || true
         done < live_subdomains_round2.txt
 
@@ -470,12 +518,20 @@ WORDBASE
             # its JSON output). This is what really got scanned, regardless of
             # whether they came from the seed loop or from `-a -w -r` archives.
             local gs_actual_hosts
-            gs_actual_hosts=$(grep -oE '"input":"[^"]+"' gospider/raw_output.txt 2>/dev/null | \
+            # `{ grep ... || true; }` — grep exits 1 when no "input" lines
+            # exist; under set -e + pipefail that would abort the whole run.
+            # (The group keeps grep's stdout flowing into the pipe; a bare
+            # `grep || true | sort` would mis-parse and skip the pipeline.)
+            gs_actual_hosts=$( { grep -oE '"input":"[^"]+"' gospider/raw_output.txt 2>/dev/null || true; } | \
                 sort -u | wc -l | tr -d ' ')
             [[ -z "$gs_actual_hosts" ]] && gs_actual_hosts=0
 
             extract_domains gospider/raw_output.txt gospider/all_domains.txt
-            grep "$domain" gospider/all_domains.txt | sort -u > gospider_subdomains.txt || true
+            # Anchor to the exact domain suffix (dots escaped) so lookalikes
+            # (`arvancloudXir`, `notarvancloud.ir.evil.tld`) don't leak into
+            # scope. A bare `grep "$domain"` treats dots as regex any-char
+            # and matches mere substrings.
+            grep -E "(^|\.)${domain//./\\.}$" gospider/all_domains.txt | sort -u > gospider_subdomains.txt || true
             if [[ -s gospider_subdomains.txt ]]; then
                 log_success "GoSpider subdomains (${gs_actual_hosts} hosts crawled across ${gs_loop_count} seeds): $(wc -l < gospider_subdomains.txt)"
             else
@@ -518,11 +574,12 @@ WORDBASE
 
             # -o writes the file; we ALSO redirect stdout into stdout.log so
             # we never lose the tool's output. -k is --nossl here, NOT
-            # cookies (cookies are -c).
+            # cookies (cookies are -c). `< /dev/null` detaches the loop's
+            # stdin defensively (same while-read stdin bug class as gospider).
             timeout "${SUBDOMAINIZER_TIMEOUT:-300}" python3 \
                 /opt/tools/SubDomainizer/SubDomainizer.py \
                 -u "$url" -k -o subdomainizer/temp_output.txt \
-                >> subdomainizer/stdout.log 2>&1 || true
+                < /dev/null >> subdomainizer/stdout.log 2>&1 || true
 
             local sd_added=0
             if [[ -s subdomainizer/temp_output.txt ]]; then
@@ -543,7 +600,9 @@ WORDBASE
                 cat subdomainizer/stdout.log 2>/dev/null
             } > /tmp/sd_combined.txt
             extract_domains /tmp/sd_combined.txt subdomainizer/all_domains.txt
-            grep "$domain" subdomainizer/all_domains.txt | sort -u > subdomainizer_subdomains.txt || true
+            # Same anchoring as the gospider grep above (exact suffix, dots
+            # escaped) — keeps out-of-scope lookalike domains out.
+            grep -E "(^|\.)${domain//./\\.}$" subdomainizer/all_domains.txt | sort -u > subdomainizer_subdomains.txt || true
             rm -f /tmp/sd_combined.txt
             if [[ -s subdomainizer_subdomains.txt ]]; then
                 log_success "Subdomainizer subdomains (${sd_hosts} hosts scanned): $(wc -l < subdomainizer_subdomains.txt)"
@@ -585,7 +644,7 @@ WORDBASE
     if [[ "$crawl_new" -gt 0 ]]; then
         httpx_probe new_subdomains_final.txt httpx_results_final.json
         if [[ -s httpx_results_final.json ]]; then
-            jq -r '.url' httpx_results_final.json | sort -u > new_live_subdomains_final.txt
+            jq -r '.url' httpx_results_final.json | sort -u > new_live_subdomains_final.txt || true
         else
             : > new_live_subdomains_final.txt
         fi

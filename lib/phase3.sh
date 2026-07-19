@@ -28,43 +28,67 @@ run_phase3() {
     log_info "Stage 1: Resolving domains to IP addresses"
 
     : > "${pdir}/all_ips_raw.txt"
+    : > "${pdir}/domain_ip_map.txt"
 
     # Use dnsx for fast bulk resolution if available
     if command -v dnsx &>/dev/null; then
         log_info "Using dnsx for bulk DNS resolution..."
-        cat "$all_domains_file" | dnsx -silent -a -json -retry 2 2>/dev/null | \
-            jq -r '.host as $host | .a[]? | "\($host) \(. "")"' 2>/dev/null > "${pdir}/dnsx_resolution.json" || true
+        # timeout wraps dnsx (never `cat` — an instant command — which would
+        # leave dnsx uncapped). dnsx reads the target list from the stdin
+        # pipe, which is exactly what we want here.
+        cat "$all_domains_file" | timeout "${DNSX_TIMEOUT:-600}" \
+            dnsx -silent -a -json -retry 2 2>/dev/null \
+            > "${pdir}/dnsx_resolution.json" || true
 
-        # Extract just IPs
-        cat "${pdir}/dnsx_resolution.json" 2>/dev/null | \
-            jq -r 'select(.a != null) | .a[]?' 2>/dev/null | sort -u > "${pdir}/all_ips_raw.txt" || true
+        # Domain→IP mapping and bare IPs from the dnsx JSONL.
+        # (The previous jq was `.host as $host | .a[]? | "\($host) \(. "")"`
+        # — `(. "")` indexes a string with an empty-string key, so jq errored
+        # on EVERY record, dnsx_resolution.json came out empty, and ALL
+        # resolution silently fell back to the slow serial dig loop.)
+        jq -r 'select(.a != null) | .host as $h | .a[] | "\($h) \(.)"' \
+            "${pdir}/dnsx_resolution.json" 2>/dev/null > "${pdir}/domain_ip_map.txt" || true
+        jq -r '.a[]?' "${pdir}/dnsx_resolution.json" 2>/dev/null \
+            >> "${pdir}/all_ips_raw.txt" || true
 
-        # Also build domain→IP mapping
-        : > "${pdir}/domain_ip_map.txt"
-        cat "$all_domains_file" | while read -r dom; do
-            [[ -z "$dom" ]] && continue
-            local ips
-            ips=$(dig +short "$dom" A 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
-            for ip in $ips; do
-                echo "$dom $ip" >> "${pdir}/domain_ip_map.txt"
-                echo "$ip" >> "${pdir}/all_ips_raw.txt"
-            done
-        done
+        local resolved_count=0
+        [[ -s "${pdir}/domain_ip_map.txt" ]] && \
+            resolved_count=$(cut -d' ' -f1 "${pdir}/domain_ip_map.txt" | sort -u | wc -l | tr -d ' ')
+        log_info "dnsx resolved ${resolved_count} of ${domain_count} domains"
     else
-        # Fallback to dig
-        log_info "Using dig for DNS resolution (dnsx not available)..."
-        : > "${pdir}/domain_ip_map.txt"
+        log_info "dnsx not available — resolving with dig only..."
+    fi
 
+    # dig fallback — ONLY for domains dnsx didn't resolve. A domain can be
+    # missed by dnsx (resolver timeout, rate limit), so skipping this
+    # entirely would lose data; running it over ALL domains (the old code)
+    # duplicated work dnsx already did.
+    local pending_file="${pdir}/.pending_resolution.txt"
+    if [[ -s "${pdir}/domain_ip_map.txt" ]]; then
+        cut -d' ' -f1 "${pdir}/domain_ip_map.txt" | sort -u > "${pdir}/.resolved_hosts.txt" || true
+        comm -23 <(sort -u "$all_domains_file") "${pdir}/.resolved_hosts.txt" \
+            > "$pending_file" || true
+    else
+        sort -u "$all_domains_file" > "$pending_file" || true
+    fi
+
+    local pending_count=0
+    [[ -s "$pending_file" ]] && pending_count=$(wc -l < "$pending_file" | tr -d ' ')
+    if [[ "$pending_count" -gt 0 ]]; then
+        log_info "dig fallback for ${pending_count} unresolved domain(s)..."
         while read -r dom; do
             [[ -z "$dom" ]] && continue
             local ips
-            ips=$(dig +short "$dom" A 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+            # `|| true`: for an unresolvable domain grep exits 1 — under
+            # set -e + pipefail the failing command substitution would
+            # otherwise abort the ENTIRE pipeline mid-loop (verified).
+            ips=$(dig +short "$dom" A 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)
             for ip in $ips; do
                 echo "$dom $ip" >> "${pdir}/domain_ip_map.txt"
                 echo "$ip" >> "${pdir}/all_ips_raw.txt"
             done
-        done < "$all_domains_file"
+        done < "$pending_file"
     fi
+    rm -f "$pending_file" "${pdir}/.resolved_hosts.txt"
 
     sort -u "${pdir}/all_ips_raw.txt" > "${pdir}/all_ips.txt" 2>/dev/null || true
     rm -f "${pdir}/all_ips_raw.txt"

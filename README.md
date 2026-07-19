@@ -260,9 +260,12 @@ pipeline. Set the env var when you run the container:
 | `GOSPIDER_TIMEOUT`       | `600`   | GoSpider crawl (per live host)                                   |
 | `SUBDOMAINIZER_TIMEOUT`  | `300`   | SubDomainizer JS scan (per live host)                            |
 | `AMASS_TIMEOUT`          | `1800`  | Amass enum (per root domain, Phase 2 cloud)                      |
-| `DNSX_TIMEOUT`           | `600`   | DNSx bulk resolution (single call per Phase 2 run)               |
+| `DNSX_TIMEOUT`           | `600`   | DNSx bulk resolution (per Phase 2 / Phase 3 call)                |
 | `CLOUD_ENUM_TIMEOUT`     | `1800`  | Cloud_Enum keyword mutation (single call per Phase 2 run)        |
 | `KATANA_CRAWL_DURATION`  | `30m`   | Katana per-host wall-clock cap (uses Katana's `-ct` flag, s/m/h) |
+| `CEWL_TIMEOUT`           | `600`   | CeWL word-crawl (per live host)                                  |
+| `CEWL_DEPTH`             | `2`     | CeWL spider depth on the first pass (retries at depth 1 on failure) |
+| `CEWL_MEM_LIMIT_MB`      | `1024`  | CeWL per-process address-space cap (`ulimit -v`, in MB) — stops CeWL from being OOM-killed on huge sites; on hitting the cap CeWL exits cleanly and the host is retried at depth 1 |
 
 ```bash
 docker run --rm -it \
@@ -270,8 +273,16 @@ docker run --rm -it \
   -e GOSPIDER_TIMEOUT=900 \
   -e AMASS_TIMEOUT=2700 \
   -e KATANA_CRAWL_DURATION=15m \
+  -e CEWL_MEM_LIMIT_MB=1536 \
   metho --domains "example.com" --auto
 ```
+
+**Why the CeWL knobs exist:** CeWL holds the spider frontier and all
+collected words in RAM and has no built-in page/memory limit, so a `-d 2`
+crawl of a large docs/library site can be SIGKILLed by the kernel OOM
+killer (observed in real runs). The memory cap turns that into a clean,
+catchable failure, and the depth-1 retry still collects that host's words
+— breadth across all live hosts is preserved without unbounded RAM use.
 
 ### Resolvers
 
@@ -287,9 +298,9 @@ The file is mounted into the container at
 
 - **ShuffleDNS** via `-r resolvers.txt` (the only required consumer
   — massdns needs a resolvers list to do its work at all)
-- **Amass** via `-rf resolvers.txt` (passive mode doesn't actually
-  query DNS, but `-rf` keeps the resolver set consistent if Amass
-  ever falls back to active methods)
+- **Amass** via `-trf resolvers.txt` (trusted-resolver file; passive mode
+  doesn't actually query DNS, but `-trf` keeps the resolver set consistent
+  if Amass ever falls back to active methods)
 - **DNSx** via `-r resolvers.txt` (ProjectDiscovery's dnsx accepts a
   resolvers file or comma-separated list at the same `-r` flag)
 - **Cloud_Enum** via `-nsf resolvers.txt` (mirrors Ars0n v2's

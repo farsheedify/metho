@@ -242,8 +242,11 @@ httpx_probe() {
     # httpx log file for full verbose output (for debugging)
     local httpx_log="${output_json%.json}.httpx.log"
 
-    # Run httpx with full output redirected to log file
-    # Only show minimal progress on console
+    # Run httpx. The -o file captures the JSON results; httpx ALSO prints the
+    # same JSON to stdout, which would flood the console with raw JSONL (seen
+    # in our runs), so stdout goes to /dev/null. `|| true`: a non-zero httpx
+    # exit (no live hosts, resolver failure) must not abort the whole
+    # pipeline under set -e + pipefail.
     cat "$input_file" | httpx \
         -silent \
         -json \
@@ -255,7 +258,7 @@ httpx_probe() {
         -timeout 10 \
         -retries 2 \
         -rate-limit "$RATE_LIMIT" \
-        -o "$output_json" 2>"$httpx_log"
+        -o "$output_json" > /dev/null 2>"$httpx_log" || true
 
     local count=0
     if [[ -s "$output_json" ]]; then
@@ -273,8 +276,11 @@ httpx_probe() {
 extract_domains() {
     local input_file="$1"
     local output_file="$2"
+    # `|| true`: grep exits 1 when the input contains zero domain-like
+    # tokens. Without it, set -e + pipefail would abort the ENTIRE pipeline
+    # run at Stage 5 with no error message (verified in testing).
     grep -oE '([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}' "$input_file" \
-        | sort -u > "$output_file"
+        | sort -u > "$output_file" || true
 }
 
 # ── Cloud Domain Filter ────────────────────────────────────────────────────
