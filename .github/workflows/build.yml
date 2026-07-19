@@ -1,0 +1,29 @@
+name: build-docker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # REQUIRED to push to GHCR
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build Docker image
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/metho:latest
+          docker build -t $IMAGE_NAME .
+
+      - name: Push image
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/metho:latest
+          docker push $IMAGE_NAME

@@ -1,0 +1,12 @@
+# Local-only / generated content - never commit:
+results/
+metho.tar
+.DS_Store
+.claude/
+
+# IDE / editor:
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
